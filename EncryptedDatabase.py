@@ -258,6 +258,23 @@ class EncryptedDatabase:
         except Exception as e:
             print(f"An error occurred during file reading: {e}")
 
+    def delete_file(self, file_uuid):
+        """
+        Delete a file from the database.
+
+        Args:
+            file_uuid (str): UUID of the file to delete.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM files WHERE id = ?', (file_uuid,))
+                conn.commit()
+
+            print(f"File with UUID '{file_uuid}' has been deleted from the database.")
+        except Exception as e:
+            print(f"An error occurred during deletion: {e}")
+
     def list_files(self):
         """
         List all files stored in the database.
@@ -278,6 +295,24 @@ class EncryptedDatabase:
         except Exception as e:
             print(f"An error occurred while listing files: {e}")
 
+    def view_encrypted_content(self, file_uuid):
+        """View the raw encrypted content of a file in the database."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT name, content FROM files WHERE id = ?', (file_uuid,))
+                result = cursor.fetchone()
+
+            if not result:
+                raise FileNotFoundError("File not found in the database.")
+
+            file_name, encrypted_content_bytes = result
+
+            print(f"Encrypted content for file: {file_name} (UUID: {file_uuid})")
+            print("Raw Encrypted Content (hex):")
+            print(encrypted_content_bytes.hex())  # Display encrypted content as a hex string
+        except Exception as e:
+            print(f"An error occurred while viewing encrypted content: {e}")
 
 
 if __name__ == "__main__":
@@ -288,6 +323,12 @@ if __name__ == "__main__":
         print("\nOptions:")
         print("1. Encrypt and store a file")
         print("2. Decrypt and retrieve a file")
+        print("3. Delete a file")
+        print("4. List files")
+        print("5. Read a file")
+        print("6. Set a passphrase")
+        print("7. Exit")
+        print("8. View encrypted content (Debug)")
 
         choice = input("Choose an option: ")
 
@@ -299,6 +340,29 @@ if __name__ == "__main__":
             file_uuid = input("Enter the UUID of the file to decrypt: ")
             output_path = input("Enter the output directory for the decrypted file (leave empty to display content): ")
             db.decrypt_file(file_uuid, output_path if output_path else None)
+        elif choice == "3":
+            db.list_files()
+            file_uuid = input("Enter the UUID of the file to delete: ")
+            db.delete_file(file_uuid)
+        elif choice == "4":
+            db.list_files()
+        elif choice == "5":
+            db.list_files()
+            file_uuid = input("Enter the UUID of the file to read: ")
+            db.read_file(file_uuid)
+        elif choice == "6":
+            new_passphrase = input("Enter a new passphrase: ")
+            try:
+                db.key_manager.set_passphrase(new_passphrase)
+            except ValueError as ve:
+                print(f"Error: {ve}")
+        elif choice == "7":
+            print("Exiting the program.")
+            break
+        elif choice == "8":
+            db.list_files()
+            file_uuid = input("Enter the UUID of the file to view encrypted content: ")
+            db.view_encrypted_content(file_uuid)
         else:
             print("Invalid option. Please try again.")
 
