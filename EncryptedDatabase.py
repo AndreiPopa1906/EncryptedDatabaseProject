@@ -3,6 +3,7 @@ import sqlite3
 import uuid
 from RSA import RSA
 from File import File
+from KeyManager import KeyManager
 
 """
 Encrypted Database Management
@@ -11,68 +12,8 @@ This module provides tools for encrypting, storing, retrieving, and managing fil
 using RSA encryption and a SQLite database. Passphrase authentication ensures private key security.
 
 Classes:
-    - KeyManager: Manages passphrase-based authentication for private key access.
     - EncryptedDatabase: Provides file encryption, decryption, and database management.
-
-Example Usage:
-    db = EncryptedDatabase()
-    db.encrypt_file("example.txt")
-    db.list_files()
-    db.decrypt_file(file_uuid, output_path="/output")
 """
-class KeyManager:
-    """
-        Handles passphrase-based authentication for RSA private key access.
-
-        Attributes:
-            rsa (RSA): RSA object for encryption and decryption.
-            _passphrase (str): Private passphrase for key security.
-    """
-    def __init__(self, rsa):
-        """
-            Initialize KeyManager with an RSA object.
-
-            Args:
-                rsa (RSA): RSA encryption object.
-        """
-        self.rsa = rsa
-        self._passphrase = None
-
-    def set_passphrase(self, passphrase):
-        """
-        Set a passphrase for private key access.
-
-        Args:
-            passphrase (str): Passphrase for key authentication.
-
-        Raises:
-            ValueError: If the passphrase is empty.
-        """
-
-        if not passphrase:
-            raise ValueError("Passphrase cannot be empty.")
-        self._passphrase = passphrase
-        print("Passphrase has been set successfully.")
-
-    def authenticate(self, passphrase):
-        """
-        Authenticate user access to the private key.
-
-        Args:
-            passphrase (str): Passphrase entered by the user.
-
-        Raises:
-            PermissionError: If the passphrase is incorrect or not set.
-        """
-        try:
-            if self._passphrase is None:
-                raise PermissionError("Passphrase has not been set. Please set a passphrase first.")
-            if passphrase != self._passphrase:
-                raise PermissionError("Invalid passphrase. Access denied.")
-            print("Authentication successful. Private key access granted.")
-        except PermissionError as e:
-            raise e
-
 class EncryptedDatabase:
     """
     Manages file encryption, storage, and retrieval using a SQLite database and RSA encryption.
@@ -92,8 +33,8 @@ class EncryptedDatabase:
             key_size (int, optional): RSA key size in bits. Defaults to 2048.
         """
         self.db_path = os.path.abspath(db_path)
-        print(f"Using database at: {self.db_path}")  # Debug statement
-        self.rsa = RSA(bit_length=key_size)  # Uses persisted keys if available
+        print(f"Using database at: {self.db_path}")
+        self.rsa = RSA(bit_length=key_size)
         self.public_key, self.private_key = self.rsa.public_key, self.rsa.private_key
         self.key_manager = KeyManager(self.rsa)
         self.init_database()
@@ -112,105 +53,140 @@ class EncryptedDatabase:
                                     metadata BLOB NOT NULL
                                 )''')
                 conn.commit()
-            print("Database initialized with correct schema.")  # Debug statement
+            print("Database initialized with correct schema.")
         except Exception as e:
             print(f"An error occurred during database initialization: {e}")
 
     def encrypt_file(self, file_path):
         """
-        Encrypt a file and store it in the database.
+        Encrypt a file and store it on disk, with its metadata saved in the database.
 
         Args:
-            file_path (str): Path to the file to be encrypted.
+            file_path (str): Path to the file that needs to be encrypted.
 
         Raises:
-            FileNotFoundError: If the file does not exist.
+            FileNotFoundError: If the provided file does not exist.
+            Exception: For any errors encountered during the encryption process.
+
         """
         try:
             if not os.path.exists(file_path):
                 raise FileNotFoundError("File does not exist.")
 
-            print(f"Encrypting file: {file_path}")  # Debug statement
+            print(f"Encrypting file: {file_path}")
 
+            # Read file content
             file = File(file_path, self.rsa)
             content = file.get_content()
 
-            # Encrypt content and metadata
+            # Encrypt file content
             encrypted_content = file.encrypt_content(content)
+            encrypted_content_bytes = encrypted_content.to_bytes(
+                (encrypted_content.bit_length() + 7) // 8, 'big'
+            )
 
-            metadata_str = f"name:{os.path.basename(file_path)}|size:{len(content)}"
+            # Save encrypted file to disk
+            encrypted_folder = "encrypted_files"
+            os.makedirs(encrypted_folder, exist_ok=True)
+            encrypted_file_path = os.path.join(
+                encrypted_folder, os.path.basename(file_path) + ".enc"
+            )
+
+            with open(encrypted_file_path, 'wb') as enc_file:
+                enc_file.write(encrypted_content_bytes)
+
+            # Prepare and encrypt metadata
+            metadata_str = f"path:{encrypted_file_path}|size:{len(content)}"
             metadata_bytes = metadata_str.encode('utf-8')
-            metadata_int = int.from_bytes(metadata_bytes, byteorder='big')
+            metadata_int = int.from_bytes(metadata_bytes, 'big')
             encrypted_metadata = self.rsa.encrypt_int(metadata_int)
+            encrypted_metadata_bytes = encrypted_metadata.to_bytes(
+                (encrypted_metadata.bit_length() + 7) // 8, 'big'
+            )
 
-            # Convert encrypted data to bytes
-            encrypted_content_bytes = encrypted_content.to_bytes((encrypted_content.bit_length() + 7) // 8, 'big')
-            encrypted_metadata_bytes = encrypted_metadata.to_bytes((encrypted_metadata.bit_length() + 7) // 8, 'big')
-
-            print("Encrypted content and metadata successfully.")  # Debug statement
-
-            # Generate UUID for the file
+            # Generate UUID and store in the database
             file_uuid = str(uuid.uuid4())
 
-            # Insert into database with UUID
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute('INSERT INTO files (id, name, content, metadata) VALUES (?, ?, ?, ?)',
-                               (file_uuid, os.path.basename(file_path), encrypted_content_bytes, encrypted_metadata_bytes))
+                cursor.execute(
+                    'INSERT INTO files (id, name, content, metadata) VALUES (?, ?, ?, ?)',
+                    (file_uuid, os.path.basename(file_path),
+                     encrypted_file_path, encrypted_metadata_bytes)
+                )
                 conn.commit()
 
-            print(f"File '{file_path}' has been encrypted and stored with UUID: {file_uuid}.")
+            print(f"File '{file_path}' has been encrypted and stored at '{encrypted_file_path}'.")
+
         except Exception as e:
             print(f"An error occurred during encryption: {e}")
 
     def decrypt_file(self, file_uuid, output_path=None):
         """
-        Decrypt a file and save it to the specified output path, or display its content.
+        Decrypt a file stored on disk and either save it or display its content.
 
         Args:
-            file_uuid (str): UUID of the file to decrypt.
-            output_path (str, optional): Path to save the decrypted file. Defaults to None.
+            file_uuid (str): The UUID of the file to be decrypted.
+            output_path (str, optional): Directory where the decrypted file will be saved.
+                                         If not provided, the content will be displayed.
 
         Raises:
-            FileNotFoundError: If the file UUID does not exist.
-            PermissionError: If authentication fails.
+            PermissionError: If the passphrase authentication fails.
+            FileNotFoundError: If the file is not found in the database or on disk.
+            NotADirectoryError: If the provided output path is invalid.
+            Exception: For any errors encountered during the decryption process.
         """
         try:
+            # Authenticate user with passphrase
             passphrase = input("Enter passphrase to access private key: ")
             self.key_manager.authenticate(passphrase)
 
+            # Retrieve file record from database
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute('SELECT name, content FROM files WHERE id = ?', (file_uuid,))
+                cursor.execute(
+                    'SELECT name, content, metadata FROM files WHERE id = ?', (file_uuid,)
+                )
                 result = cursor.fetchone()
 
             if not result:
                 raise FileNotFoundError("File not found in the database.")
 
-            file_name, encrypted_content_bytes = result
+            file_name, encrypted_file_path, encrypted_metadata_bytes = result
 
             print(f"Decrypting file: {file_name} with UUID: {file_uuid}")
+            print(f"Encrypted file path: {encrypted_file_path}")
 
-            # Convert encrypted content bytes back to an integer
+            # Verify encrypted file exists on disk
+            if not os.path.exists(encrypted_file_path):
+                raise FileNotFoundError("Encrypted file not found on disk.")
+
+            # Read encrypted content from disk
+            with open(encrypted_file_path, 'rb') as enc_file:
+                encrypted_content_bytes = enc_file.read()
+
+            # Convert bytes to integer for RSA decryption
             encrypted_content = int.from_bytes(encrypted_content_bytes, 'big')
 
-            # Decrypt the content
+            # Decrypt content using RSA
             file = File(file_name, self.rsa)
             decrypted_content = file.decrypt_content(encrypted_content)
 
-            # Save the decrypted file if an output path is provided
+            # Save or display the decrypted content
             if output_path:
                 if not os.path.isdir(output_path):
                     raise NotADirectoryError(f"Invalid output directory: {output_path}")
 
                 full_output_path = os.path.join(output_path, file_name)
+
                 with open(full_output_path, 'wb') as output_file:
                     output_file.write(decrypted_content)
+
                 print(f"File '{file_name}' has been decrypted and saved to '{full_output_path}'.")
             else:
-                # Display the decrypted content
                 print("\nDecrypted File Content:")
-                print(decrypted_content.decode('utf-8', errors='ignore'))  # Attempt to decode as text
+                print(decrypted_content.decode('utf-8', errors='ignore'))
+
         except PermissionError as pe:
             print(f"Authentication failed: {pe}")
         except Exception as e:
@@ -332,6 +308,12 @@ if __name__ == "__main__":
 
         choice = input("Choose an option: ")
 
+        # Ensure passphrase is set for the current IP
+        if choice in ["2", "5"] and not db.key_manager.is_passphrase_set():
+            print("No passphrase found for your IP. Please set a passphrase first.")
+            new_passphrase = input("Enter a new passphrase: ")
+            db.key_manager.set_passphrase(new_passphrase)
+
         if choice == "1":
             file_path = input("Enter the path of the file to encrypt: ")
             db.encrypt_file(file_path)
@@ -352,10 +334,7 @@ if __name__ == "__main__":
             db.read_file(file_uuid)
         elif choice == "6":
             new_passphrase = input("Enter a new passphrase: ")
-            try:
-                db.key_manager.set_passphrase(new_passphrase)
-            except ValueError as ve:
-                print(f"Error: {ve}")
+            db.key_manager.set_passphrase(new_passphrase)
         elif choice == "7":
             print("Exiting the program.")
             break
@@ -365,5 +344,7 @@ if __name__ == "__main__":
             db.view_encrypted_content(file_uuid)
         else:
             print("Invalid option. Please try again.")
+
+
 
 
